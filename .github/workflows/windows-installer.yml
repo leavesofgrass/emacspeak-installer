@@ -149,6 +149,9 @@ jobs:
             exit 1
           }
           Write-Host 'Pass: the installer stopped, named eSpeak NG, and wrote nothing.'
+          # The installer's exit status 1 is still in LASTEXITCODE, and GitHub's
+          # PowerShell wrapper would end the step with it, so say so explicitly.
+          exit 0
 
       - name: Download and install eSpeak NG, for its voice data
         if: matrix.espeak != ''

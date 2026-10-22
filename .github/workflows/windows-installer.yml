@@ -1,0 +1,202 @@
+# Runs scripts/install-emacspeak-windows.ps1 on GitHub's Windows runners,
+# with its self-tests. It runs only on GitHub, once the owner pushes this
+# file; nothing here runs on a local machine.
+#
+# Runners have no speakers, so the test where the default server speaks
+# normally reports "skipped". The other tests need no sound: one starts
+# OmniVox from Emacs by the bare name servers/omnivox, the way emacspeak
+# starts its server. Each job runs the installer twice, the second time on
+# the update path with the three opt-in switches, and uploads the
+# installer's log, which holds OmniVox's --list-voices and --check reports.
+#
+# The first four jobs pass no -Speech, so they get the default engine,
+# omnivox, without a menu: a runner is not interactive. The last two pick
+# engines with -Speech: all of them (sharpwin is built with the runner's
+# .NET SDK), and espeak alone, which first must stop and name eSpeak NG,
+# whose voice data it needs, then pass once eSpeak NG is installed.
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - scripts/install-emacspeak-windows.ps1
+      - .github/workflows/windows-installer.yml
+
+permissions:
+  contents: read
+
+env:
+  # The official GNU Emacs zip for Windows, for the jobs that pass
+  # -EmacsPath. Its SHA-256 is the one in GNU's emacs-30.2-sha256sum.txt.
+  EMACS_ZIP_URL: https://ftp.gnu.org/gnu/emacs/windows/emacs-30/emacs-30.2.zip
+  EMACS_ZIP_SHA256: 414d3a1a21147af257ebd98bdd15976fdcb5ed0563f6de89f76d4a4b5dad9c72
+  # eSpeak NG's own Windows installer, for the jobs that install espeak.
+  # Its SHA-256 is the one in winget's manifest of eSpeak-NG.eSpeak-NG 1.52.0.
+  ESPEAK_MSI_URL: https://github.com/espeak-ng/espeak-ng/releases/download/1.52.0/espeak-ng.msi
+  ESPEAK_MSI_SHA256: 7f673c709ea5dd579d3b5ebb98688cc575328a6ab7438d2bc405b88cedaeafb9
+
+jobs:
+  install:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The default route: the installer finds no Emacs and installs
+          # GNU.Emacs with winget. If the runner image lacks winget, this
+          # job stops at the installer's "winget is not available" error.
+          - name: x64, Emacs from winget, Windows PowerShell 5.1
+            os: windows-latest
+            emacs: winget
+            ps: powershell
+            options: ""
+          - name: x64, GNU Emacs zip, PowerShell 7
+            os: windows-latest
+            emacs: zip
+            ps: pwsh
+            options: -SkipDeps -EmacsPath "%RUNNER_TEMP%\emacs\bin\emacs.exe"
+          # GNU builds Emacs for x64 only; Windows 11 runs it emulated,
+          # while OmniVox comes as its native arm64 build.
+          - name: arm64, GNU Emacs zip, Windows PowerShell 5.1
+            os: windows-11-arm
+            emacs: zip
+            ps: powershell
+            options: -SkipDeps -EmacsPath "%RUNNER_TEMP%\emacs\bin\emacs.exe"
+          # The runner image has Rust, CMake, LLVM and Visual Studio.
+          - name: x64, OmniVox from source, Windows PowerShell 5.1
+            os: windows-latest
+            emacs: zip
+            ps: powershell
+            options: -OmnivoxSource -SkipDeps -EmacsPath "%RUNNER_TEMP%\emacs\bin\emacs.exe"
+          # Every engine. The windows-latest image (Windows Server 2025)
+          # has .NET SDKs 8.0 to 10.0, so sharpwin is built without winget.
+          # The second run has no -Speech: it must reuse the recorded choice.
+          - name: x64, all speech engines, GNU Emacs zip, Windows PowerShell 5.1
+            os: windows-latest
+            emacs: zip
+            ps: powershell
+            espeak: install
+            options: -Speech all -SkipDeps -EmacsPath "%RUNNER_TEMP%\emacs\bin\emacs.exe"
+            rerun: -SkipDeps -EmacsPath "%RUNNER_TEMP%\emacs\bin\emacs.exe"
+            recorded: OmniVox, espeak, sharpwin
+          # OmniVox's espeak-ng engine alone, which becomes the default.
+          - name: x64, espeak engine, GNU Emacs zip, PowerShell 7
+            os: windows-latest
+            emacs: zip
+            ps: pwsh
+            espeak: stop-then-install
+            options: -Speech espeak -SkipDeps -EmacsPath "%RUNNER_TEMP%\emacs\bin\emacs.exe"
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Check the syntax with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            "$PWD\scripts\install-emacspeak-windows.ps1", [ref]$tokens, [ref]$errors)
+          foreach ($e in $errors) { Write-Host "line $($e.Extent.StartLineNumber): $($e.Message)" }
+          if (@($errors).Count -gt 0) { exit 1 }
+          Write-Host 'No parse errors.'
+
+      - name: Show the winget version
+        if: matrix.emacs == 'winget'
+        continue-on-error: true
+        shell: cmd
+        run: winget --version
+
+      - name: Download and unpack the GNU Emacs zip
+        if: matrix.emacs == 'zip'
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $zip = Join-Path $env:RUNNER_TEMP 'emacs.zip'
+          Invoke-WebRequest -Uri $env:EMACS_ZIP_URL -OutFile $zip
+          $got = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($got -ne $env:EMACS_ZIP_SHA256) {
+            Write-Host "ERROR: checksum mismatch for the Emacs zip: got $got"
+            exit 1
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'emacs')
+          Write-Host "Emacs unpacked; checksum verified: $got"
+
+      - name: Show the .NET SDKs, which sharpwin needs
+        if: contains(matrix.options, '-Speech all')
+        shell: cmd
+        run: dotnet --list-sdks
+
+      # Without eSpeak NG, -Speech espeak must stop before it changes
+      # anything, with exit status 1 and a message that names eSpeak NG.
+      - name: Check that -Speech espeak stops and names eSpeak NG when it is missing
+        if: matrix.espeak == 'stop-then-install'
+        shell: pwsh
+        run: |
+          $emacs = Join-Path $env:RUNNER_TEMP 'emacs\bin\emacs.exe'
+          $out = & ${{ matrix.ps }} -NoProfile -ExecutionPolicy Bypass -File scripts\install-emacspeak-windows.ps1 -Speech espeak -SkipDeps -EmacsPath $emacs 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $out
+          if ($code -ne 1 -or $out -notmatch "espeak needs eSpeak NG's voice data") {
+            Write-Host "ERROR: expected the stop that names eSpeak NG; the exit status was $code"
+            exit 1
+          }
+          if (Test-Path -LiteralPath (Join-Path $env:USERPROFILE '.emacspeak')) {
+            Write-Host 'ERROR: the stop came after the installer had started to write the prefix'
+            exit 1
+          }
+          Write-Host 'Pass: the installer stopped, named eSpeak NG, and wrote nothing.'
+
+      - name: Download and install eSpeak NG, for its voice data
+        if: matrix.espeak != ''
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $msi = Join-Path $env:RUNNER_TEMP 'espeak-ng.msi'
+          Invoke-WebRequest -Uri $env:ESPEAK_MSI_URL -OutFile $msi
+          $got = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($got -ne $env:ESPEAK_MSI_SHA256) {
+            Write-Host "ERROR: checksum mismatch for the eSpeak NG installer: got $got"
+            exit 1
+          }
+          $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', "`"$msi`"", '/qn', '/norestart') -Wait -PassThru
+          if ($p.ExitCode -ne 0) {
+            Write-Host "ERROR: msiexec exit status $($p.ExitCode)"
+            exit 1
+          }
+          Write-Host "eSpeak NG installed; checksum verified: $got"
+
+      - name: Run the installer
+        shell: cmd
+        run: ${{ matrix.ps }} -NoProfile -ExecutionPolicy Bypass -File scripts\install-emacspeak-windows.ps1 ${{ matrix.options }}
+
+      - name: Run the installer again, the update path, with the opt-in switches
+        shell: cmd
+        run: ${{ matrix.ps }} -NoProfile -ExecutionPolicy Bypass -File scripts\install-emacspeak-windows.ps1 ${{ matrix.rerun || matrix.options }} -StartMenuShortcut -SetHome -AddToPath
+
+      - name: Check that the second run reused the recorded speech engines
+        if: matrix.recorded != ''
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:USERPROFILE '.emacspeak'
+          if ($env:HOME -and (Test-Path -LiteralPath (Join-Path $env:HOME '.emacspeak'))) {
+            $prefix = Join-Path $env:HOME '.emacspeak'
+          }
+          $log = Get-Content -Raw -LiteralPath (Join-Path $prefix 'install-emacspeak-windows.log')
+          if (-not $log.Contains('Selected in the last run: ${{ matrix.recorded }}.')) {
+            Write-Host 'ERROR: the second run did not reuse the recorded speech engines'
+            exit 1
+          }
+          Write-Host 'Pass: the second run reused the recorded speech engines.'
+          Get-Content -LiteralPath (Join-Path $prefix 'speech-engines')
+
+      - name: Upload the installer's log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: install-log-${{ strategy.job-index }}
+          path: ~/.emacspeak/install-emacspeak-windows.log
+          if-no-files-found: ignore

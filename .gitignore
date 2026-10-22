@@ -1,0 +1,16 @@
+# Proprietary Voxin / IBM ViaVoice payloads: licensed binaries that must
+# never be committed, even if someone drops the archive into the clone.
+*voxin*.tar.*
+*voxin*.tgz
+*.txz
+voxin-installer*
+rfs_*.tar*
+rfs32/
+
+# Local logs and test output
+*.log
+
+# Editor and OS noise
+*~
+.DS_Store
+Thumbs.db

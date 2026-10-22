@@ -1,0 +1,108 @@
+# Runs scripts/install-emacspeak-macos.sh on GitHub's macOS runners, with
+# its self-tests. It runs only on GitHub, once the owner pushes this file;
+# nothing here runs on a local machine.
+#
+# Runners have no speakers and no logged-in user, so the system voice gives
+# no audio there: OmniVox's own check reports a warning and its server test
+# is skipped, and the job still passes. Each job uploads the installer's
+# build log, which holds OmniVox's --list-voices and --check reports, as an
+# artifact.
+name: macOS installer
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - scripts/install-emacspeak-macos.sh
+      - .github/workflows/macos-installer.yml
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout }}
+    # Every job must pass, the emacs-plus one included.
+    continue-on-error: false
+    env:
+      # Lets the installer ask the GitHub API for the latest OmniVox release
+      # without hitting the limit for calls without a token.
+      GH_TOKEN: ${{ github.token }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # options: the first run. rerun: the second run, the update path.
+        # An empty rerun leaves out --speech, so the second run reuses the
+        # engines the first one recorded.
+        include:
+          # The first three use the default Emacs route: the installer
+          # itself installs Homebrew's emacs formula. In the first run it
+          # came prebuilt on both kinds of runner (Emacs 31.1 on Apple
+          # silicon, 30.2 on Intel), so no job installs Emacs beforehand.
+          - name: Apple silicon, prebuilt OmniVox
+            os: macos-15
+            options: ""
+            rerun: ""
+            timeout: 60
+          # OmniVox cross-compiles its Intel binary and never runs it in its
+          # own CI, so this job is its only real run.
+          - name: Intel, prebuilt OmniVox
+            os: macos-15-intel
+            options: ""
+            rerun: ""
+            timeout: 90
+          - name: Apple silicon, OmniVox from source
+            os: macos-15
+            options: --omnivox-source
+            rerun: --omnivox-source
+            timeout: 60
+          # The emacs-plus route: tap, whole-tap trust, and a source build of
+          # emacs-plus@30, so it gets a longer limit.
+          - name: Apple silicon, emacs-plus
+            os: macos-15
+            options: --emacs-plus
+            rerun: --emacs-plus
+            timeout: 180
+          # Every engine: OmniVox, its espeak-ng engine, swiftmac (runners
+          # have Xcode, so Swift is there) and the Tcl espeak server. Both
+          # runs build swiftmac; the second keeps TclX.
+          - name: Apple silicon, every speech engine
+            os: macos-15
+            options: --speech all
+            rerun: ""
+            timeout: 120
+          # The heavy route on Intel: tcl-tk@8, TclX from source, and sox,
+          # which Homebrew may compile there, with no OmniVox at all.
+          - name: Intel, Tcl espeak server
+            os: macos-15-intel
+            options: --speech tclespeak
+            rerun: ""
+            timeout: 150
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Check the syntax with the bash that macOS ships
+        run: /bin/bash -n scripts/install-emacspeak-macos.sh
+
+      - name: List the speech engines
+        run: /bin/bash scripts/install-emacspeak-macos.sh --speech list
+
+      - name: Run the installer
+        run: /bin/bash scripts/install-emacspeak-macos.sh ${{ matrix.options }}
+
+      - name: Run the installer again, the update path
+        run: /bin/bash scripts/install-emacspeak-macos.sh ${{ matrix.rerun }}
+
+      - name: Show the recorded speech engines
+        run: cat "$HOME/.emacspeak/speech-engines"
+
+      - name: Upload the build log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: install-log-${{ strategy.job-index }}
+          path: ~/Library/Logs/install-emacspeak-macos.log
+          if-no-files-found: ignore

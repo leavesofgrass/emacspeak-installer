@@ -1,0 +1,185 @@
+# Runs scripts/build-emacspeak-stack-windows.ps1 on GitHub's Windows
+# runners, x64 and arm64. It runs only on GitHub, once the owner pushes
+# this file; nothing here runs on a local machine.
+#
+# Each job builds the stack in the default folder with Windows PowerShell
+# 5.1 and every self-test, checks that a damaged download stops a rerun,
+# updates the stack with -Update under PowerShell 7 (which also repairs
+# the damaged download), runs update.cmd, checks the folder, and uploads
+# each run's log and the manifest.
+#
+# Runners have no speakers, so the two self-tests that make sound report
+# a warning or a skip there, not a failure. Nothing here opens a neomacs
+# window: the tests run neomacs in batch mode, which is also how the
+# startup times in the manifest are measured, and once in the console
+# (-nw) with a silent stand-in for the speech server.
+#
+# Two audio desktops are built. Upstream emacspeak must pass. EmacsVox,
+# the script's default, is allowed to fail: in October 2026 its master
+# branch asks "Are you sure you want to submit a bug report?" while it
+# loads, and its newer branch stops its console start with "Unexpected
+# call!" (see docs/stack-windows.md). When those jobs turn green,
+# EmacsVox works on neomacs.
+name: Windows stack (neomacs and OmniVox)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - scripts/build-emacspeak-stack-windows.ps1
+      - .github/workflows/stack-windows.yml
+
+permissions:
+  contents: read
+
+env:
+  # Raises the GitHub API rate limit for the release and commit lookups.
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  stack:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    continue-on-error: ${{ matrix.allowed-to-fail }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x64, upstream emacspeak
+            os: windows-latest
+            options: -EmacspeakRepo tvraman/emacspeak
+            allowed-to-fail: false
+          # neomacs and OmniVox both publish native arm64 builds.
+          - name: arm64, upstream emacspeak
+            os: windows-11-arm
+            options: -EmacspeakRepo tvraman/emacspeak
+            allowed-to-fail: false
+          - name: x64, EmacsVox (the default)
+            os: windows-latest
+            options: ""
+            allowed-to-fail: true
+          - name: arm64, EmacsVox (the default)
+            os: windows-11-arm
+            options: ""
+            allowed-to-fail: true
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Check the syntax with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            "$PWD\scripts\build-emacspeak-stack-windows.ps1", [ref]$tokens, [ref]$errors)
+          foreach ($e in $errors) { Write-Host "line $($e.Extent.StartLineNumber): $($e.Message)" }
+          if (@($errors).Count -gt 0) { exit 1 }
+          Write-Host 'No parse errors.'
+
+      - name: Show the help text, which must change nothing
+        shell: pwsh
+        run: |
+          & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-emacspeak-stack-windows.ps1 -Help
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (Test-Path -LiteralPath (Join-Path $env:USERPROFILE 'emacspeak-stack')) {
+            Write-Host 'ERROR: -Help created the stack folder'
+            exit 1
+          }
+          Write-Host 'Pass: -Help printed the usage and created nothing.'
+
+      # Later runs keep the audio desktop this one records in the manifest.
+      - name: Build the stack with Windows PowerShell 5.1, with every self-test
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-emacspeak-stack-windows.ps1 ${{ matrix.options }}
+
+      - name: Keep the first run's log
+        if: always()
+        shell: pwsh
+        run: |
+          $logs = Join-Path $env:RUNNER_TEMP 'logs'
+          New-Item -ItemType Directory -Force -Path $logs | Out-Null
+          $log = Join-Path $env:USERPROFILE 'emacspeak-stack\build.log'
+          if (Test-Path -LiteralPath $log) { Copy-Item -LiteralPath $log -Destination (Join-Path $logs '1-build.log') }
+
+      # A rerun re-verifies every download, so a damaged one must stop it
+      # with exit status 1, name the checksum mismatch, and set the file
+      # aside so the next run downloads it again.
+      - name: Check that a damaged download stops a rerun
+        shell: pwsh
+        run: |
+          $downloads = Join-Path $env:USERPROFILE 'emacspeak-stack\downloads'
+          $zip = @(Get-ChildItem -LiteralPath $downloads -Filter 'omnivox-*-windows-*.zip')[0].FullName
+          [IO.File]::AppendAllText($zip, 'damage')
+          $out = & powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-emacspeak-stack-windows.ps1 -NoTest 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $out
+          if ($code -ne 1 -or $out -notmatch 'checksum mismatch') {
+            Write-Host "ERROR: expected a stop that names the checksum mismatch; the exit status was $code"
+            exit 1
+          }
+          if (-not (Test-Path -LiteralPath ($zip + '.bad'))) {
+            Write-Host 'ERROR: the damaged download was not set aside'
+            exit 1
+          }
+          Write-Host 'Pass: the rerun stopped, named the mismatch, and set the download aside.'
+          # The script's exit status 1 is still in LASTEXITCODE, and GitHub's
+          # PowerShell wrapper would end the step with it, so say so explicitly.
+          exit 0
+
+      - name: Update the stack with PowerShell 7 (-Update), with every self-test
+        shell: cmd
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File "%USERPROFILE%\emacspeak-stack\tools\build-emacspeak-stack-windows.ps1" -Update
+
+      - name: Keep the update's log
+        if: always()
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:USERPROFILE 'emacspeak-stack\build.log'
+          if (Test-Path -LiteralPath $log) { Copy-Item -LiteralPath $log -Destination (Join-Path $env:RUNNER_TEMP 'logs\2-update.log') }
+
+      - name: Run update.cmd, without the self-tests
+        shell: cmd
+        env:
+          EMACSPEAK_STACK_NO_PAUSE: "1"
+        run: call "%USERPROFILE%\emacspeak-stack\update.cmd" -NoTest
+
+      - name: Check the folder, the launchers and the profile
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:USERPROFILE 'emacspeak-stack'
+          $failed = $false
+          foreach ($f in @('emacspeak.cmd', 'emacspeak-console.cmd', 'update.cmd', 'README.txt', 'manifest.txt',
+                           'home\.emacs.d\init.el', 'home\.emacs.d\local.el', 'tools\build-emacspeak-stack-windows.ps1')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $prefix $f))) { Write-Host "ERROR: $f is missing"; $failed = $true }
+          }
+          Get-Content -LiteralPath (Join-Path $prefix 'manifest.txt')
+          # HOME is inside the folder, so neither Emacs's nor emacspeak's
+          # usual files may appear in the profile.
+          foreach ($p in @((Join-Path $env:APPDATA '.emacs.d'), (Join-Path $env:USERPROFILE '.emacs.d'),
+                           (Join-Path $env:USERPROFILE '.emacspeak'), (Join-Path $env:APPDATA '.emacspeak'))) {
+            if (Test-Path -LiteralPath $p) { Write-Host "ERROR: $p appeared in the profile"; $failed = $true }
+          }
+          if ($failed) { exit 1 }
+          Write-Host 'Pass: the folder is complete, and the profile is untouched.'
+
+      - name: Keep the last log and the manifest
+        if: always()
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:USERPROFILE 'emacspeak-stack'
+          $logs = Join-Path $env:RUNNER_TEMP 'logs'
+          New-Item -ItemType Directory -Force -Path $logs | Out-Null
+          foreach ($pair in @(@('build.log', '3-update-cmd.log'), @('manifest.txt', 'manifest.txt'))) {
+            $f = Join-Path $prefix $pair[0]
+            if (Test-Path -LiteralPath $f) { Copy-Item -LiteralPath $f -Destination (Join-Path $logs $pair[1]) }
+          }
+
+      - name: Upload the logs and the manifest
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stack-log-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/logs
+          if-no-files-found: ignore

@@ -55,14 +55,16 @@ jobs:
             os: windows-11-arm
             options: -EmacspeakRepo tvraman/emacspeak
             allowed-to-fail: false
-          - name: x64, EmacsVox (the default)
+          # The default: EmacsVox pinned to its pull request 2's head, which
+          # passed every self-test locally; these jobs must pass too.
+          - name: x64, EmacsVox (the default, pinned to pull request 2)
             os: windows-latest
             options: ""
-            allowed-to-fail: true
-          - name: arm64, EmacsVox (the default)
+            allowed-to-fail: false
+          - name: arm64, EmacsVox (the default, pinned to pull request 2)
             os: windows-11-arm
             options: ""
-            allowed-to-fail: true
+            allowed-to-fail: false
     steps:
       - name: Check out the repository
         uses: actions/checkout@v7

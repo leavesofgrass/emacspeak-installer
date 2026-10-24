@@ -13,12 +13,14 @@ default: a fork of emacspeak modernized for Emacs 31 by the OmniVox
 author. `-EmacspeakRepo tvraman/emacspeak` builds upstream emacspeak.
 
 Status in October 2026: **upstream emacspeak works on neomacs 0.0.19**,
-every silent self-test passes, a console start included. **EmacsVox does
-not work yet**, for reasons in EmacsVox itself (see "EmacsVox" below):
-its `master` branch asks a question while it loads, and its newer
-`safe-elisp-modernization` branch builds and loads but stops its
-interactive start with an error. Until EmacsVox is fixed, build with
-`-EmacspeakRepo tvraman/emacspeak`.
+every silent self-test passes, a console start included. **EmacsVox works
+at the head of its pull request 2**, commit `7f14ecee9044`, which is why
+the script pins the EmacsVox default to that commit: every self-test
+passes there, all 232 files compile, and no old-style advice remains.
+EmacsVox's `master` branch does not load (it asks a question while
+loading), and its `safe-elisp-modernization` branch stops its interactive
+start with an error; see "EmacsVox" below. When pull request 2 merges,
+lift the pin (`$DefaultEmacsvoxRef` in the script).
 
 For emacspeak on GNU Emacs, the proven route, use
 `scripts/install-emacspeak-windows.ps1` instead.
@@ -63,7 +65,8 @@ focused program, and JAWS has INSERT+SPACEBAR, then Z.
 - `-EmacspeakRepo REPO`: the GitHub repository of the audio desktop, as
   `owner/name` or its URL. Default `robertmeta/emacsvox` on a first run,
   and the installed one on a rerun; `tvraman/emacspeak` is upstream.
-- `-EmacspeakRef REF`: its branch, tag or commit. Default `master`.
+- `-EmacspeakRef REF`: its branch, tag or commit. Default: for EmacsVox the
+  pinned commit `7f14ecee9044` (pull request 2's head), otherwise `master`.
 - `-SetupFile FILE`: the setup file in the snapshot's `lisp` folder.
   Default: `emacsvox-setup.el` when the snapshot has it, otherwise
   `emacspeak-setup.el`. Its name without `-setup.el` is the prefix of the
@@ -319,6 +322,16 @@ function, which `init.el` also calls when it exists.
 
 ## EmacsVox
 
+**Working base: pull request 2.** A build at its head, commit
+`7f14ecee9044` (July 24, 2026), passed every self-test on neomacs 0.0.19:
+autoloads, all 232 files byte-compiled in 35 s, a 23.4 MB dump, the batch
+loads, the speech-advice test with all five commands speaking, and a
+console start in 0.5 s with the greeting and no error. The snapshot has
+zero `defadvice` forms and zero old-style advised functions after a full
+start. Startup matches upstream with the dump (about 155 ms) and beats it
+from source (770 against 1,079 ms). The script therefore pins the EmacsVox
+default to that commit. The two branches below are what came before.
+
 Read from GitHub, then built and tested here, in October 2026:
 
 - **Renamed throughout.** The core files are `emacsvox-preamble.el`,
@@ -340,10 +353,11 @@ Read from GitHub, then built and tested here, in October 2026:
 - **`lisp/Makefile`** on master still lists `emacspeak-*.elc` and
   `emacspeak-preamble.el`; the script maps each name to the snapshot's
   own. The newer branch completes the rename.
-- **master does not load.** The formatting commit "Apply consistent
-  formatting to all lisp files" closed `emacsvox-submit-bug` in
-  `lisp/emacsvox-speak.el` right after `(interactive)`, so its body runs
-  at load time: it asks "Are you sure you want to submit a bug report?
+- **master does not load.** The commit that removed the `cl-declare`
+  lines (922e2970, December 30, 2025) left a lone closing paren that ends
+  `emacsvox-submit-bug` in `lisp/emacsvox-speak.el` right after
+  `(interactive)`; the later formatting commit only re-indented the broken
+  shape. So the function's body runs at load time: it asks "Are you sure you want to submit a bug report?
   (yes or no)", and a stray parenthesis follows. In batch mode the
   question reads standard input and fails; an interactive start would
   ask it every time, on GNU Emacs too. The script stops with that
@@ -535,9 +549,8 @@ October 2026 for release 0.0.19 (September 20, 2026):
 ## What only GitHub's runners can verify
 
 The workflow `.github/workflows/stack-windows.yml` runs on `windows-latest`
-(x64) and `windows-11-arm`, once for upstream emacspeak, which must pass,
-and once for EmacsVox, the default, which may fail until EmacsVox is
-fixed:
+(x64) and `windows-11-arm`, once for upstream emacspeak and once for EmacsVox, the default, pinned
+to pull request 2's head; both must pass:
 
 - the arm64 builds of neomacs and OmniVox, which the test machine (x64)
   cannot run;

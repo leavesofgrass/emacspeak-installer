@@ -127,6 +127,11 @@ $OmnivoxRepo = 'robertmeta/omnivox'
 # tvraman/emacspeak, upstream emacspeak, when asked for.
 $DefaultEmacspeakRepo = 'robertmeta/emacsvox'
 $DefaultEmacspeakRef = 'master'
+# EmacsVox master does not load: a misplaced paren in emacsvox-speak.el
+# asks a question at load time. Its pull request 2 fixes the Lisp and
+# passed every self-test here, so the EmacsVox default is pinned to that
+# pull request's head until it merges. Lift the pin when it does.
+$DefaultEmacsvoxRef = '7f14ecee9044826e4f5a4e578a4287feeb532418'
 # The releases this script was written against. They are used only when
 # GitHub cannot be asked for the latest release and nothing is installed.
 $NeomacsFallback = '0.0.19'
@@ -257,7 +262,9 @@ function Show-Usage([string]$DefaultPrefix) {
         '  -EmacspeakRepo REPO    GitHub repository of the audio desktop',
         "                         (default $DefaultEmacspeakRepo;",
         '                         tvraman/emacspeak for upstream)',
-        '  -EmacspeakRef REF      branch, tag or commit (default master)',
+        '  -EmacspeakRef REF      branch, tag or commit (default: for',
+        '                         EmacsVox the pinned commit 7f14ecee9044,',
+        '                         else master)',
         '  -SetupFile FILE        its setup file in lisp (default: the',
         '                         emacsvox-setup.el or emacspeak-setup.el',
         '                         found there)',
@@ -2230,7 +2237,10 @@ foreach ($item in @(
 if (-not $EmacspeakRepo) { $EmacspeakRepo = Get-Recorded 'emacspeak-repo' }
 if (-not $EmacspeakRepo) { $EmacspeakRepo = $DefaultEmacspeakRepo }
 if (-not $EmacspeakRef) { $EmacspeakRef = Get-Recorded 'emacspeak-ref' }
-if (-not $EmacspeakRef) { $EmacspeakRef = $DefaultEmacspeakRef }
+if (-not $EmacspeakRef) {
+    if ($EmacspeakRepo -eq $DefaultEmacspeakRepo) { $EmacspeakRef = $DefaultEmacsvoxRef }
+    else { $EmacspeakRef = $DefaultEmacspeakRef }
+}
 $EmacspeakCommit = ''
 $EmacspeakCommitDate = ''
 $sameSource = ((Get-Recorded 'emacspeak-repo') -eq $EmacspeakRepo) -and ((Get-Recorded 'emacspeak-ref') -eq $EmacspeakRef)
